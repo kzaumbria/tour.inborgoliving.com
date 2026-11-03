@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {distance,Proximity} from '../public/assets/js/proximity.js';
+import {Tour} from '../public/assets/js/tour.js';
+import {GPS} from '../public/assets/js/gps.js';
+const stop=(id,lat=0,order=id,radius=40)=>({id,stop_order:order,radius,location:{latitude:lat,longitude:0}});
+const p=(latitude=0,accuracy=5)=>({latitude,longitude:0,accuracy});
+test('Haversine distance and zero distance',()=>{assert.equal(distance(p(),p()),0);assert.ok(Math.abs(distance(p(),p(1))-111195)<2);});
+test('Outside radius does not trigger; two spaced fixes inside trigger only once',()=>{const e=new Proximity([stop(1)]);assert.equal(e.update(p(.001),0).arrival,null);assert.equal(e.update(p(),100).arrival,null);assert.equal(e.update(p(),1700).arrival.id,1);assert.equal(e.update(p(),4000).arrival,null);});
+test('Expected stop wins over a closer overlapping stop',()=>{const e=new Proximity([stop(1,.0002),stop(2,0)]);e.update(p(),0);assert.equal(e.update(p(),1600).arrival.id,1);});
+test('Closest eligible stop wins if expected stop is outside its radius',()=>{const e=new Proximity([stop(1,.01),stop(2,.0002),stop(3,0)]);e.update(p(),0);assert.equal(e.update(p(),1600).arrival.id,3);});
+test('Equal distances resolve in route order',()=>{const e=new Proximity([stop(1,.01),stop(3,0,3),stop(2,0,2)]);e.update(p(),0);assert.equal(e.update(p(),1600).arrival.id,2);});
+test('Accuracy worse than configured radius cannot trigger; fixes separated by GPS loss cannot debounce',()=>{const e=new Proximity([stop(1,0,1,20)]);e.update(p(0,40),0);assert.equal(e.update(p(0,40),2000).arrival,null);e.update(p(),3000);assert.equal(e.update(p(),30000).arrival,null);assert.equal(e.update(p(),32000).arrival.id,1);});
+test('Hysteresis retains nearby state but does not trigger outside actual radius',()=>{const e=new Proximity([stop(1)]);e.update(p(),0);assert.equal(e.update(p(.0004),2000).arrival,null);assert.ok(e.nearby.has('1'));e.update(p(.001),3000);assert.equal(e.nearby.has('1'),false);});
+test('An open arrival panel blocks every additional trigger',()=>{const e=new Proximity([stop(1),stop(2)]);e.update(p(),0);assert.equal(e.update(p(),2000,true).arrival,null);assert.equal(e.triggered.size,0);assert.equal(e.update(p(),4000).arrival.id,1);assert.equal(e.update(p(),6000,true).arrival,null);});
+test('Reset permits arrivals again and persisted triggered IDs prevent repeat',()=>{const e=new Proximity([stop(1)],['1']);assert.equal(e.update(p(),2000).arrival,null);e.reset();e.update(p(),4000);assert.equal(e.update(p(),6000).arrival.id,1);});
+test('Storage survives refresh and isolates route/simulation state',()=>{const values=new Map();global.localStorage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v)};const r={slug:'one',stops:[stop(1),stop(2)]};const a=new Tour(r);a.state.started=true;a.visit(r.stops[0]);const refreshed=new Tour(r);assert.equal(refreshed.state.started,true);assert.equal(refreshed.next().id,2);assert.deepEqual(new Tour({...r,slug:'two'}).state.visited,[]);assert.deepEqual(new Tour(r,true).state.visited,[]);refreshed.route={...r,stops:[stop(2),stop(1)]};assert.equal(refreshed.next().id,2);});
+test('GPS rejects poor accuracy, stale fixes, and unrealistic jumps',()=>{const positions=[],statuses=[];const gps=new GPS(p=>positions.push(p),s=>statuses.push(s));const now=Date.now();assert.equal(gps.accept({...p(),accuracy:100,timestamp:now}),false);assert.equal(gps.accept({...p(),timestamp:now-60000}),false);assert.equal(gps.accept({...p(),timestamp:now}),true);assert.equal(gps.accept({...p(1),timestamp:now+1000}),false);assert.equal(positions.length,1);assert.deepEqual(statuses,['poor','stale','ready','jump']);});

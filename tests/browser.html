@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>InBorgo staging browser checks</title><link rel="stylesheet" href="/assets/css/style.css"></head><body><main><h1>InBorgo browser checks</h1><p>Staging only. Tests the deployed JavaScript modules without requesting location, modifying the database or clearing real tour progress. Remove this file from public hosting after testing.</p><button id="run">Run tests</button><pre id="results" class="preserve" role="status"></pre><a href="/">Return to tours</a></main><script type="module">
+import {distance,Proximity} from '/assets/js/proximity.js';
+import {GPS} from '/assets/js/gps.js';
+import {Tour} from '/assets/js/tour.js';
+import {storage} from '/assets/js/storage.js';
+const output=document.querySelector('#results');
+const assert=(value,label)=>{if(!value)throw new Error(label);};
+const p=(latitude=0,accuracy=5)=>({latitude,longitude:0,accuracy});
+const stop=(id,latitude=0,order=id,radius=40)=>({id,stop_order:order,radius,location:{latitude,longitude:0}});
+document.querySelector('#run').onclick=async()=>{
+ output.textContent='';let failed=0;
+ const test=(label,fn)=>{try{fn();output.textContent+='PASS '+label+'\n';}catch(e){failed++;output.textContent+='FAIL '+label+': '+e.message+'\n';}};
+ test('Distance formula',()=>assert(Math.abs(distance(p(),p(1))-111195)<2,'one degree latitude'));
+ test('Inside/outside radius and debounce',()=>{const e=new Proximity([stop(1)]);assert(!e.update(p(.01),0).arrival,'outside');assert(!e.update(p(),100).arrival,'first fix');assert(e.update(p(),1800).arrival?.id===1,'second fix');assert(!e.update(p(),4000).arrival,'no repeat');});
+ test('Expected stop preferred in overlapping zones',()=>{const e=new Proximity([stop(1,.0002),stop(2,0)]);e.update(p(),0);assert(e.update(p(),2000).arrival?.id===1,'expected');});
+ test('Closest eligible fallback',()=>{const e=new Proximity([stop(1,.01),stop(2,.0002),stop(3,0)]);e.update(p(),0);assert(e.update(p(),2000).arrival?.id===3,'closest');});
+ test('Poor accuracy blocks triggering',()=>{const e=new Proximity([stop(1,0,1,20)]);e.update(p(0,60),0);assert(!e.update(p(0,60),2000).arrival,'poor accuracy');});
+ test('Open arrival panel blocks additional triggers',()=>{const e=new Proximity([stop(1)]);e.update(p(),0);assert(!e.update(p(),2000,true).arrival,'blocked');assert(e.update(p(),4000).arrival?.id===1,'unblocked');});
+ test('Persisted triggered state and reset',()=>{const e=new Proximity([stop(1)],['1']);assert(!e.update(p(),0).arrival,'persisted');e.reset();e.update(p(),1000);assert(e.update(p(),3000).arrival?.id===1,'reset');});
+ test('GPS ignores stale, inaccurate and jumping fixes',()=>{let count=0;const gps=new GPS(()=>count++,()=>{}),now=Date.now();assert(!gps.accept({...p(),timestamp:now-60000}),'stale');assert(!gps.accept({...p(0,100),timestamp:now}),'accuracy');assert(gps.accept({...p(),timestamp:now}),'good');assert(!gps.accept({...p(1),timestamp:now+1000}),'jump');assert(count===1,'one accepted fix');});
+ const slug='browser-test-'+Date.now(),r={slug,stops:[stop(1),stop(2)]};
+ try{test('Progress refresh and simulation isolation',()=>{const a=new Tour(r);a.state.started=true;assert(a.visit(r.stops[0]),'storage allowed');const b=new Tour(r);assert(b.state.started&&b.next().id===2,'refresh');assert(new Tour(r,true).state.visited.length===0,'isolated simulation');});}finally{storage.remove('tour:'+slug);storage.remove('simulation:'+slug);}
+ test('PWA secure context and browser capabilities',()=>{assert(window.isSecureContext,'Use HTTPS');assert('serviceWorker'in navigator,'Service workers');assert('caches'in window,'Cache Storage');assert(typeof HTMLDialogElement==='function','Dialog support');});
+ output.textContent+=`\n${failed?'FAILED: '+failed:'All deterministic browser checks passed.'}\n`;
+ output.textContent+='Browser: '+navigator.userAgent+'\nSpeech synthesis: '+('speechSynthesis'in window?'available (test voices manually)':'unavailable; reading fallback required')+'\nGeolocation API: '+('geolocation'in navigator?'available (test permissions manually)':'unavailable; use manual browsing')+'\n';
+};
+</script></body></html>
